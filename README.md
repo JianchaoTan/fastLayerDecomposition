@@ -2,7 +2,7 @@
 
 
 This code implements the pipeline described in the SIGGRAPH Asia 2018 paper ["Efficient palette-based decomposition and recoloring of images via RGBXY-space geometry"](https://cragl.cs.gmu.edu/fastlayers/) Jianchao Tan, Jose Echevarria, and Yotam Gingold.
-
+A different and simpler prototype implementation can be found in [this link](https://cragl.cs.gmu.edu/fastlayers/RGBXY_weights.py)
 
 ## Example usage
 
@@ -29,4 +29,4 @@ The `turquoise.png` image is copyright [Michelle Lee](http://cargocollective.com
 * cvxopt, built with the [GLPK](https://www.gnu.org/software/glpk/) linear programming solver interface (`CVXOPT_BUILD_GLPK=1 pip install cvxopt`)
 * PIL or Pillow (Python Image Library) (`pip install Pillow`)
 * pyopencl
-* websockets (pip install websockets)
+* websockets (`pip install websockets`)
