@@ -2,17 +2,18 @@
 
 
 This code implements the pipeline described in the SIGGRAPH Asia 2018 paper ["Efficient palette-based decomposition and recoloring of images via RGBXY-space geometry"](https://cragl.cs.gmu.edu/fastlayers/) Jianchao Tan, Jose Echevarria, and Yotam Gingold.
+
 A different and simpler prototype implementation can be found in [this link](https://cragl.cs.gmu.edu/fastlayers/RGBXY_weights.py)
 
 ## Example usage
 
-Whole pipeline:
+Run whole pipeline:
 
     Directly run `Our_preprocessing_pipeline.ipynb` using jupyter notebook
 
 You can test if your installation is working by comparing your output to the `test/turquoise groundtruth results/` directory.
 
-GUI:
+Launch GUI:
 
     cd image-layer-updating-GUI
     python3 server.py
