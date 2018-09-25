@@ -1,0 +1,1998 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <title>Visualize the colors of an image as a 3D RGB point cloud</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+        <link rel="stylesheet" href="styles.css">
+    </head>
+    <body>
+
+        <div id="info">
+            <div class="image_holder">
+                <a id="img_info" href="#" target="_blank">
+                    <div id="image_name_holder">Image: <span id="img_name">image name</span></div>
+                    <img id="image" class="image" src="" alt="Visualized image">
+                </a>
+            </div>
+            <div class="image_holder" id="reconstruction_holder">
+                <div>Reconstruction</div>
+                <canvas id="image_reconstructed" class="image" alt="Reconstructed image"></canvas>
+            </div>
+            <div class="image_holder" id="img_difference_holder">
+                <div>Difference</div>
+                <canvas id="img_difference" class="image" alt="Difference image"></canvas>
+            </div>
+            
+            
+            <div style="clear: both;"></div>
+            <div id="debug"></div>
+            <input id="upload" type="file">
+            <div>
+                <p><button id="precompute">Pre-compute RGBXY weights</button>
+                
+                <p><button id="autoCompute">Create automatic palette</button>
+                <br>
+                <input type="checkbox" id="userChoose" name="userChoose" value="userChoose">
+                <label for="userChoose">Prescribed number of layers:</label>
+                <input type="number" id="layerNum" name="layerNum" value="6">
+                
+                <p><button id="addOneColor" onclick="addOneColor()" disabled>Add Random Palette Color</button>
+
+            </div>
+
+
+            <div style="padding-top: 1em;"></div>
+            
+            <div id="container"></div>
+            
+            <div class="widget"><label>Rotation has intertia:<input type="checkbox" id="intertia" /></label></div>
+            <!-- <div class="widget"><button id="look_from_white">Look from white</button></div> -->
+            <div><a href="#" id="look_from_white">Look from white</a></div>
+            <div id="saveAll"><a href="#" onclick="saveAll()">Save Everything</a></div>
+            <div id="saveCamera"><a href="#" onclick="saveCamera()">Save Camera Only</a></div>
+        </div>
+        <div id="layers">
+            <div>Layers:</div>
+            
+            <div id="layer_holder"></div>
+            
+            <div>
+                <input type="checkbox" id="colorful" name="colorful" value="colorful" checked>
+                <label for="colorful">colorful</label>
+            </div>
+        </div>
+
+        <script src="js/three.js"></script>
+
+        <script src="js/controls/TrackballControls.js"></script>
+        <script src="js/Detector.js"></script>
+        <script src="js/libs/stats.min.js"></script>
+        <script src="js/purl.js"></script>
+        
+        <script src="js/Blob.js"></script>
+        <script src="js/canvas-toBlob.js"></script>
+        
+        <script src="js/websocket-client.js"></script>
+        <!--
+            // This appears not to support multiple calls to saveAs()
+            // without an async callback of some sort.
+            // Issue: https://github.com/eligrey/FileSaver.js/issues/165
+            // Fork with fix: https://github.com/Hypercubed/FileSaver.js/tree/patch-1
+            // I wrote my own (see below).
+            <script src="js/FileSaver.js"></script>
+        -->
+        
+        <script src="js/helpers.js"></script>
+        
+        <script>
+            if ( ! Detector.webgl ) Detector.addGetWebGLMessage();
+
+            var socket = null;
+
+            var container, stats;
+
+            var camera, scene, renderer, controls;
+
+            var particleSystem;
+            var img = null;
+            
+            var overlayMesh = null;
+            
+            var weights = null;
+            var recolor_data = null;
+            var img_difference=null;
+
+            var colorful_flag="colorful";
+            
+            // For picking
+            var picking_data = {};
+            
+            // Screenshots mode is true by default
+            var kScreenshots = true;
+            // Unless a `screenshots` parameter is passed with the value 'no',
+            // as in: http://http://yig.github.io/image-rgb-in-3D/?screenshots=no
+            if( purl().param('screenshots') === 'no' ) kScreenshots = false;
+            // Unless a `screenshots` parameter is passed at all,
+            // as in: http://http://yig.github.io/image-rgb-in-3D/?screenshots
+            // var kScreenshots = purl().param('screenshots') !== undefined;
+            // Hide the Save PNG button if screenshots is not present.
+            if( !kScreenshots ) {
+                var saveScreenshotButton = document.getElementById( 'saveScreenshot' )
+                saveScreenshotButton.parentNode.removeChild( saveScreenshotButton );
+            }
+            console.log( "purl 'screenshots': " + purl().param('screenshots') );
+            console.log( "kScreenshots: " + kScreenshots );
+            
+            // Whether to apply gamma correction to convert input data to linear RGB.
+            var kGammaCorrect = false;
+            if( purl().param('gamma') !== undefined ) kGammaCorrect = true;
+            
+            init3D();
+            initWebSocket();
+            if( purl().param('image') !== undefined )
+            {
+                console.log("WHY2")
+                loadImage( decodeURI( purl().param('image') ) );
+            }
+            else
+            {
+                loadImage( 'pigs.jpg' );
+            }
+
+            function addOneColor(){
+                console.log( "add random color button clicked." );
+                
+                if( overlayMesh === null ) {
+                    console.log( "overlayMesh is null. No palette has been loaded. The user shouldn't be able to click this button!" );
+                    return;
+                }
+
+                //generate random point in rgb cube. 
+                //However, this point position will influence convex hull shape and will make existing vertices inside new hull.
+                //delaunay triangulation can handle inside point. but current star triangulation is based on convex hull.
+                var r=Math.floor(Math.random() * 256);
+                var g=Math.floor(Math.random() * 256);
+                var b=Math.floor(Math.random() * 256);
+                var new_color=[r,g,b];
+                                // Get the colors.
+                var colors = [];
+                colors.length = overlayMesh.vertices.children.length;
+                for( var i = 0; i < overlayMesh.vertices.children.length; ++i )
+                {
+                    var pos = overlayMesh.vertices.children[i].position;
+                    colors[i] = [ pos.x*255, pos.y*255, pos.z*255 ];
+                }
+                colors[colors.length]=new_color;
+                userRandomAddOneMoreColor(colors);
+
+            }
+
+
+            // assign function to onclick property of checkbox
+            document.getElementById('colorful').onclick = function() {
+                console.log( "colorful checkbox clicked." );
+                
+                // access properties using this keyword
+                if ( this.checked ) 
+                {
+                    colorful_flag="colorful";
+                } 
+                else 
+                {
+                    colorful_flag="gray";
+                }
+                drawLayerImage();
+            }
+            
+            // assign function to onclick property of button
+            document.getElementById('precompute').onclick = function() {
+                console.log( "precompute button clicked." );
+                
+                // Disable the precompute button.
+                document.getElementById( 'precompute' ).disabled = true;
+                // Enable the automatic palette button.
+                document.getElementById( 'autoCompute' ).disabled = false;
+                
+                sendImageToServer( img );
+            }
+            
+            document.getElementById('userChoose').onchange = function() {
+                // Enable the autoCompute button.
+                document.getElementById( 'autoCompute' ).disabled = false;
+            }
+            document.getElementById('layerNum').onchange = function() {
+                // Enable the autoCompute button.
+                document.getElementById( 'autoCompute' ).disabled = false;
+                document.getElementById( 'userChoose' ).checked = true;
+            }
+
+            // assign function to onclick property of button
+            document.getElementById('autoCompute').onclick = function() {
+                console.log( "autocompute button clicked." )
+                
+                // If the precompute button hasn't been clicked, click it.
+                if( !document.getElementById( 'precompute' ).disabled ) {
+                    document.getElementById( 'precompute' ).click();
+                }
+                
+                // Disable this button.
+                document.getElementById( 'autoCompute' ).disabled = true;
+                
+                // Automatic or manually chosen # of layers?
+                if( document.getElementById('userChoose').checked ) {
+                    var layernum=document.getElementById('layerNum').value;
+                    console.log(parseInt(layernum));
+                    computePaletteByUserSpecifyNumber(parseInt(layernum));
+                }
+                else
+                {
+                    automaticallyComputePalette();
+                } 
+
+            }
+
+            function loadImage( url, name )
+            {
+                // The 'name' parameter is optional and defaults to 'url'.
+                if( name === undefined ) name = url;
+                
+                document.getElementById('img_info').href = url;
+                document.getElementById('img_name').innerHTML = name;
+                /*
+                if( url.length > 255 ) {
+                    // TODO: Just use overflow: scroll and put the whole thing there.
+                    document.getElementById('img_name').innerHTML = '...' + url.substr( -255, 255 );
+                } else {
+                    document.getElementById('img_name').innerHTML = url;
+                }
+                */
+                
+                img = document.getElementById('image');
+                // Set the crossOrigin property.
+                // From: http://stackoverflow.com/questions/19869150/html5-canvas-element-getimagedata-cross-origin-error
+                // From: https://developer.mozilla.org/en-US/docs/Web/HTML/CORS_settings_attributes
+                // UPDATE: We do this in the HTML itself, so we don't need this here.
+                // UPDATE 2: Setting the cross-origin policy causes this to break on Safari.
+                // img.crossOrigin = '';
+                // img.crossOrigin = 'anonymous';
+                // img.crossOrigin = 'use-credentials';
+                
+                // Wait until loaded.
+                // From: http://stackoverflow.com/questions/280049/javascript-callback-for-knowing-when-an-image-is-loaded/24201249#24201249
+                // UPDATE: img.complete returns true for Firefox before the image is actually complete.
+                // img.onload = createParticles;
+                img.addEventListener( "load", createParticles );
+                img.addEventListener( "load", function() {
+                    console.log("img.onload() sending image:", img.complete, img.naturalWidth );
+                    // Save this function call for the precompute button:
+                    // sendImageToServer( img );
+                    // Save this function call for the autocompute button:
+                    // automaticallyComputePalette();
+                    
+                    // Call onWindowResize() every time something might
+                    // change the position of the THREE.js view inside the page.
+                    onWindowResize();
+                } );
+                // console.log("load image and compute palette");
+                img.onerror = function() { alert( 'Error loading image.' ); console.error( 'Error loading image:' ); console.error( url ) };
+                
+                img.src = url;
+                
+                // Enable the precompute button.
+                document.getElementById( 'precompute' ).disabled = false;
+                // Enable the automatic palette button.
+                document.getElementById( 'autoCompute' ).disabled = false;
+            }
+            function uploadImageFile()
+            {
+                // From: http://stackoverflow.com/questions/22087076/how-to-make-a-simple-image-upload-using-javascript-html
+                file = document.getElementById('upload').files[0];
+                
+                loadFile( file );
+            }
+            function loadFile( file )
+            {
+                if( !file ) {
+                    alert( 'Failed to load file.' );
+                    return;
+                }
+                
+                var reader = new FileReader();
+                
+                // If it ends with JSON, treat it as a JSON file
+                // containing the faces and vertices of the overlay mesh.
+                if( /.js(on)?$/.test( file.name ) ) {
+                    reader.onload = function() {
+                        var parsed = JSON.parse( reader.result );
+                        // Depending on which keys the JSON contains, we pass
+                        // it to different functions.
+                        // In fact, we can pass it to multiple functions if it
+                        // satisfies multiple loaders' criteria.
+                        if( loadableOverlayMesh( parsed ) ) {
+                            console.log("load a palette file");
+                            loadOverlayMesh( parsed, file.name );
+                        }
+                        if( loadableWeights( parsed ) ) {
+                            loadWeights( parsed );
+                        }
+                        if( loadableCamera( parsed ) ) {
+                            loadCamera( parsed );
+                        }
+                        if( loadableFloatColors( parsed ) ) {
+                            loadFloatColors( parsed );
+                        }
+                        };
+                    // read the data as a binary string.
+                    reader.readAsBinaryString( file );
+                }
+                else {
+                    console.log("WHY1")
+                    reader.onload = function() { loadImage( reader.result, file.name ); };
+                    // reads the data as a data URL
+                    reader.readAsDataURL( file );
+                }
+            }
+            document.getElementById('upload').onchange = uploadImageFile;
+            // Drag-and-drop anywhere onto the window.
+            // From: http://stackoverflow.com/questions/11124630/how-to-do-document-ondrop-in-firefox
+            document.ondragover = function( event ) { event.preventDefault(); }
+            document.ondrop = function( event ) { event.preventDefault(); loadFile( event.dataTransfer.files[0] ); }
+            
+            function blobPNGFromCanvas( canvas, callback ) {
+                /*
+                Creates a Blob `blob` from the canvas object `canvas` and calls the function
+                `callback( blob )` afterwards.
+                */
+                
+                var kMIMEType = "image/png";
+                var blob = canvas.toBlobHD( callback, kMIMEType );
+            }
+            function canvasFromImage( img ) {
+                
+                var canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                var ctx = canvas.getContext("2d");
+                ctx.drawImage( img, 0, 0, img.naturalWidth, img.naturalHeight );
+                
+                return canvas;
+            }
+            function basenameForSave() {
+                // The name of the loaded image.
+                return document.getElementById('img_name').innerHTML;
+            }
+            function saveScreenshot( basename )
+            {
+                if( basename === undefined ) basename = basenameForSave();
+                
+                if( !kScreenshots ) {
+                    console.log( "This probably won't work. Refresh the page with ?screenshots" );
+                }
+                
+                /// Open in a new window.
+                // var kMIMEType = "image/png";
+                // var dataURL = renderer.domElement.toDataURL( kMIMEType );
+                // window.open( dataURL );
+                
+                // Make the filename.
+                var filename = "screenshot.png";
+                if( basename.length > 0 ) filename = basename + "-" + filename;
+                
+                blobPNGFromCanvas(
+                    renderer.domElement,
+                    function( blob ) { saveAs( blob, filename ); }
+                    );
+            }
+            function saveRecolorImage( basename ) {
+                if( basename === undefined ) basename = "";
+                
+                // I don't know what the default size of an image is.
+                // Check recolor_data
+                if( recolor_data === null ) {
+                    // We don't have a recolor image. There's nothing to save.
+                    return;
+                }
+                
+                // Make the filename.
+                var filename = "recolor.png";
+                if( basename.length > 0 ) filename = basename + "-" + filename;
+                
+                var recolor = document.getElementById('image_reconstructed');
+                blobPNGFromCanvas(
+                    recolor,
+                    function( blob ) { saveAs( blob, filename ); }
+                    );
+            }
+            function saveLayers( basename ) {
+                if( basename === undefined ) basename = "";
+                
+                var layers = document.getElementById( "layer_holder" ).childNodes;
+                
+                for( var i = 0; i < layers.length; ++i ) {
+                    
+                    // Make the filename.
+                    // NOTE: Use let, or else we need a closure to capture filename
+                    //       the blobPNGFromCanvas() callback.
+                    let filename = "layer " + i + ".png";
+                    if( basename.length > 0 ) filename = basename + "-" + filename;
+                    
+                    blobPNGFromCanvas(
+                        canvasFromImage( layers[i] ),
+                        function( blob ) { saveAs( blob, filename ); }
+                        );
+                }
+            }
+            // From Gist: https://gist.github.com/yig/aeeb1ee67a13bea98f3d
+            function saveAs( blob, name ) {
+                "use strict";
+                
+                // Inspired by Syntax: http://stackoverflow.com/questions/23451726/saving-binary-data-as-file-using-javascript-from-a-browser/23451803#23451803
+                // Initially created to work around a bug in eligray/FileSaver.js
+                // which prevented saving multiple files
+                // (Issue 165: https://github.com/eligrey/FileSaver.js/issues/165 ).
+                
+                // Create a hidden `a` element.
+                var a = document.createElement("a");
+                document.body.appendChild(a);
+                a.style.cssText = "display: none";
+                
+                // createObjectURL() will leak memory.
+                var url = window.URL.createObjectURL(blob);
+                a.href = url;
+                a.download = name;
+                a.click();
+                window.URL.revokeObjectURL(url);
+                a.parentNode.removeChild(a);
+            }
+            function saveAll() {
+                // Save:
+                // 1. a screenshot of the 3D view
+                // 2. the camera
+                // 3. the overlay mesh
+                // 4. the recolored image
+                
+                // The name of the loaded image.
+                var basename = basenameForSave();
+                
+                
+                // 1.
+                saveScreenshot( basename );
+                
+                // 2.
+                saveCamera( basename );
+                
+                // 3.
+                saveOverlayMesh( basename );
+                
+                // 4.
+                saveRecolorImage( basename );
+                
+                // 5.
+                saveWeights( basename );
+                
+                // 6.
+                saveLayers( basename );
+            }
+            function saveWeights( basename ) {
+                if( basename === undefined ) basename = "";
+                
+                var data = saveWeightsJSON();
+                
+                // Make the filename.
+                var filename = "weights.js";
+                if( basename.length > 0 ) filename = basename + "-" + filename;
+                
+                // Now save data as JSON.
+                var blob = new Blob([ JSON.stringify( data ) ], {type: "application/json"});
+                saveAs( blob, filename );
+            }
+            function saveWeightsJSON() {
+                // Weights data lives inside a 'weights' key.
+                return { 'weights': weights };
+            }
+            function saveCamera( basename ) {
+                if( basename === undefined ) basename = "";
+                
+                var data = saveCameraJSON();
+                
+                // Make the filename.
+                var filename = "camera.js";
+                if( basename.length > 0 ) filename = basename + "-" + filename;
+                
+                // Now save data as JSON.
+                var blob = new Blob([ JSON.stringify( data ) ], {type: "application/json"});
+                saveAs( blob, filename );
+            }
+            function saveCameraJSON() {
+                var data = {};
+                data.position = [ camera.position.x, camera.position.y, camera.position.z ];
+                data.up = [ camera.up.x, camera.up.y, camera.up.z ];
+                data.quaternion = [ camera.quaternion.x, camera.quaternion.y, camera.quaternion.z, camera.quaternion.w ];
+                data.target = [ controls.target.x, controls.target.y, controls.target.z ];
+                // Camera data lives inside a 'camera' key.
+                return { 'camera': data };
+            }
+            function loadCamera( data ) {
+                // Camera data lives inside a 'camera' key.
+                data = data.camera;
+                
+                var pos = data.position;
+                var quat = data.quaternion;
+                var up = data.up;
+                var target = data.target;
+                
+                // controls.target.set( target[0], target[1], target[2] );
+                controls.target.set.apply( controls.target, target );
+                camera.position.set.apply( camera.position, pos );
+                camera.up.set.apply( camera.up, up );
+                camera.quaternion.set.apply( camera.quaternion, quat );
+                
+                render();
+            }
+            function loadableCamera( data ) {
+                // We can load a camera if there is a 'camera' entry.
+                return 'camera' in data;
+            }
+            
+            function sRGB_to_LinearRGB( srgb ) {
+                if( !kGammaCorrect ) return srgb;
+                
+                var rgb = [ 0, 0, 0 ];
+                
+                // Following: https://en.wikipedia.org/wiki/SRGB
+                var thresh = 0.04045;
+                var a = 0.055;
+                
+                for( var i = 0; i < 3; ++i ) {
+                    var val = srgb[i];
+                    
+                    rgb[i] =
+                        val <= thresh
+                        ? val / 12.92
+                        : Math.pow( ( val + a ) / ( 1 + a ), 2.4 )
+                        ;
+                }
+                
+                return rgb;
+            }
+            
+            function uniquePixels( data, skip_transparent )
+            {
+                if( skip_transparent === undefined ) skip_transparent = true;
+                /*
+                console.log( "skip_transparent:", skip_transparent );
+                var skip_count = 0;
+                var skipped = {};
+                */
+                
+                /*
+                Given an array of RGBA unsigned char values, every four of which represent
+                the next pixel, returns an array of unique values.
+                */
+                
+                var unique = {};
+                
+                var num_pixels = data.length/4;
+                for( var i = 0; i < num_pixels; ++i )
+                {
+                    // Skip transparent pixels
+                    if( skip_transparent && data[ 4*i + 3 ] === 0 )
+                    {
+                        /*
+                        skip_count += 1;
+                        skipped[ [
+                            data[ 4*i + 0 ],
+                            data[ 4*i + 1 ],
+                            data[ 4*i + 2 ],
+                            data[ 4*i + 3 ]
+                            ] ] = true;
+                        */
+                        continue;
+                    }
+                    
+                    unique[ [
+                        data[ 4*i + 0 ],
+                        data[ 4*i + 1 ],
+                        data[ 4*i + 2 ],
+                        data[ 4*i + 3 ]
+                        ] ] = true;
+                }
+                
+                /*
+                /// Chrome reads the RGB channels of 100% transparent pixels as 0,0,0.
+                /// I didn't test other browsers.
+                console.log( "Number of skipped transparent pixels:", skip_count );
+                console.log( skipped );
+                */
+                
+                var result = [];
+                
+                for( var k in unique )
+                {
+                    var color = JSON.parse('[' + k + ']');
+                    
+                    // Push color[0], color[1], ... to the end of result.
+                    result.push.apply( result, color );
+                }
+                
+                console.log( result.length/4 + " / " + data.length/4 + " = " + (100*result.length/data.length) + "% unique pixels" );
+                
+                return result;
+            }
+            function countExtremeValues( data, skip_transparent )
+            {
+                if( skip_transparent === undefined ) skip_transparent = true;
+                
+                /*
+                Given an array of RGBA unsigned char values, every four of which represent
+                the next pixel, count the number of extreme values and the number of pixels
+                any of whose channels are extreme.
+                */
+                
+                var extreme_values = 0;
+                var extreme_pixels = 0;
+                
+                var num_pixels = data.length/4;
+                for( var i = 0; i < num_pixels; ++i )
+                {
+                    // Skip transparent pixels
+                    if( skip_transparent && data[ 4*i + 3 ] === 0 )
+                    {
+                        continue;
+                    }
+                    
+                    var has_extreme_channel = false;
+                    for( var c = 0; c < 3; ++c ) {
+                        if( data[ 4*i + c ] === 0 || data[ 4*i + c ] === 255 ) {
+                            extreme_values += 1;
+                            has_extreme_channel = true;
+                        }
+                    }
+                    if( has_extreme_channel ) extreme_pixels += 1;
+                }
+                
+                console.log( "number of pixels with any RGB values equal to 0 or 255:", extreme_pixels, "(" + (100.*extreme_pixels/num_pixels).toFixed(2) + "%)" );
+                console.log( "number of RGB values equal to 0 or 255:", extreme_values, "(" + (100.*extreme_values/(3*num_pixels)).toFixed(2) + "%)" );
+                
+                return { 'extreme_pixels': extreme_pixels, 'extreme_values': extreme_values };
+            }
+            
+            function createParticles( params )
+            {
+                if( params === undefined ) params = {};
+                // By default, only create particles for unique colors.
+                if( !( 'only_unique_pixels' in params ) ) params.only_unique_pixels = true;
+                // By default, clear the overlay mesh.
+                if( !( 'clear_overlay_mesh' in params ) ) params.clear_overlay_mesh = true;
+                // By default, don't count the number of extreme (0 or 255) values.
+                if( !( 'count_extreme_values' in params ) ) params.count_extreme_values = true;
+                
+                if( particleSystem !== undefined ) scene.remove( particleSystem );
+                // Also clear the overlay mesh if there is one.
+                if( params.clear_overlay_mesh ) clearOverlayMesh();
+                
+                // Get the particles from the image's pixels.
+                // From: http://stackoverflow.com/questions/1041399/how-to-use-javascript-or-jquery-to-read-a-pixel-of-an-image
+                var canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                var ctx = canvas.getContext("2d");
+                ctx.drawImage( img, 0, 0, img.naturalWidth, img.naturalHeight );
+                // getImageData returns an RGBA byte array.
+                var pixels = ctx.getImageData( 0, 0, canvas.width, canvas.height ).data;
+                if( params.count_extreme_values ) {
+                    countExtremeValues( pixels );
+                }
+                if( params.only_unique_pixels ) {
+                    // Only take unique colors.
+                    pixels = uniquePixels( pixels );
+                }
+                
+                var num_particles = pixels.length / 4;
+
+                var geometry = new THREE.BufferGeometry();
+                var positions = new Float32Array( num_particles * 3 );
+                var colors = new Float32Array( num_particles * 3 );
+
+                for ( var i = 0; i < num_particles; i += 1 ) {
+
+                    // colors are also positions
+                    var r = pixels[ 4*i + 0 ]/255.;
+                    var g = pixels[ 4*i + 1 ]/255.;
+                    var b = pixels[ 4*i + 2 ]/255.;
+                    
+                    var linear_rgb = sRGB_to_LinearRGB( [ r,g,b ] );
+                    
+                    positions[ 3*i + 0 ] = linear_rgb[0];
+                    positions[ 3*i + 1 ] = linear_rgb[1];
+                    positions[ 3*i + 2 ] = linear_rgb[2];
+
+                    colors[ 3*i + 0 ] = r;
+                    colors[ 3*i + 1 ] = g;
+                    colors[ 3*i + 2 ] = b;
+
+                }
+                
+                document.getElementById('debug').innerHTML =
+                    'width: ' + img.naturalWidth + ', height: ' + img.naturalHeight
+                    +
+                    '<br>total pixels: ' + canvas.width*canvas.height
+                    +
+                    '<br>unique pixels: ' + num_particles
+                    ;
+
+                geometry.addAttribute( 'position', new THREE.BufferAttribute( positions, 3 ) );
+                geometry.addAttribute( 'color', new THREE.BufferAttribute( colors, 3 ) );
+
+                geometry.computeBoundingSphere();
+
+                //
+
+                var material = new THREE.PointCloudMaterial( { size: 4/255., vertexColors: THREE.VertexColors } );
+
+                particleSystem = new THREE.PointCloud( geometry, material );
+                // return particleSystem;
+                scene.add( particleSystem );
+                
+                render();
+            }
+            function loadableFloatColors( parsed )
+            {
+                return 'float_colors' in parsed;
+            }
+            function loadFloatColors( parsed )
+            {
+                console.log( "loadFloatColors( ... ):" );
+                console.log( parsed );
+                var float_colors = parsed.float_colors;
+                
+                // Remove the current colors.
+                if( particleSystem !== undefined ) scene.remove( particleSystem );
+                
+                var num_particles = float_colors.length;
+
+                var geometry = new THREE.BufferGeometry();
+                var positions = new Float32Array( num_particles * 3 );
+                var colors = new Float32Array( num_particles * 3 );
+
+                for ( var i = 0; i < num_particles; i += 1 ) {
+
+                    // colors are also positions
+                    var r = float_colors[i][0];
+                    var g = float_colors[i][1];
+                    var b = float_colors[i][2];
+                    
+                    var linear_rgb = sRGB_to_LinearRGB( [r,g,b] );
+                    
+                    positions[ 3*i + 0 ] = linear_rgb[0];
+                    positions[ 3*i + 1 ] = linear_rgb[1];
+                    positions[ 3*i + 2 ] = linear_rgb[2];
+
+                    colors[ 3*i + 0 ] = r;
+                    colors[ 3*i + 1 ] = g;
+                    colors[ 3*i + 2 ] = b;
+
+                }
+                
+                console.log( "Number of floating point colors:", num_particles );
+                
+                geometry.addAttribute( 'position', new THREE.BufferAttribute( positions, 3 ) );
+                geometry.addAttribute( 'color', new THREE.BufferAttribute( colors, 3 ) );
+
+                geometry.computeBoundingSphere();
+
+                //
+
+                var material = new THREE.PointCloudMaterial( { size: 4/255., vertexColors: THREE.VertexColors } );
+
+                particleSystem = new THREE.PointCloud( geometry, material );
+                // return particleSystem;
+                scene.add( particleSystem );
+                
+                render();
+            }
+            function drawRecolorImage()
+            {
+                if( weights == null ) {
+                    console.error( "drawRecolorImage() but weights == null." );
+                    return;
+                }
+                
+                // Get the colors.
+                var colors = [];
+                colors.length = overlayMesh.vertices.children.length;
+                for( var i = 0; i < overlayMesh.vertices.children.length; ++i )
+                {
+                    var pos = overlayMesh.vertices.children[i].position;
+                    colors[i] = [ pos.x, pos.y, pos.z ];
+                }
+                
+                // Create a context2d if we don't have one yet.
+                if( !( 'ctx' in recolor_data ) ) {
+                    var recolor = document.getElementById('image_reconstructed');
+                    recolor_data.ctx = recolor.getContext("2d");
+                    // Initialize the canvas by drawing the original image into it.
+                    recolor_data.ctx.drawImage( img, 0, 0, img.naturalWidth, img.naturalHeight );
+                }
+                var ctx = recolor_data.ctx;
+                
+                // Create an imagedata if we don't have one yet.
+                if( !( 'imagedata' in recolor_data ) ) {
+                    // ctx.getImageData() gets a copy of the context's imagedata.
+                    recolor_data.imagedata = ctx.getImageData( 0, 0, img.naturalWidth, img.naturalHeight );
+                }
+                var imagedata = recolor_data.imagedata;
+                
+                // // If our particleSystem has the right sized positions and colors,
+                // // update them.
+                // // They will have the wrong size if we are only drawing unique pixels.
+                // function buffer_matches_or_null( buffer ) {
+                //     if( buffer.itemSize == 3 && buffer.array.length / 3 == imagedata.width*imagedata.height ) {
+                //         // It will need to be updated.
+                //         buffer.needsUpdate = true;
+                //         // Return its array.
+                //         return buffer.array;
+                //     } else {
+                //         return null;
+                //     }
+                // }
+                // var particleSystemPositions = buffer_matches_or_null( particleSystem.geometry.attributes['position'] );
+                // var particleSystemColors = buffer_matches_or_null( particleSystem.geometry.attributes['color'] );
+                
+                // Iterate over every pixel and set it.
+                var total = [ 0., 0., 0. ];
+                for( var row = 0; row < imagedata.height; ++row ) {
+                    for( var col = 0; col < imagedata.width; ++col ) {
+                        // Initialize the sum to 0.
+                        for( var chan = 0; chan < 3; ++chan ) {
+                            total[chan] = 0.;
+                        }
+                        
+                        // Add every color multiplied by its weight.
+                        for( var wi = 0; wi < weights[row][col].length; ++wi ) {
+                            // Get the weight.
+                            var w = weights[row][col][wi];
+                            
+                            // total += sum_i weight_i * color_i
+                            for( var chan = 0; chan < 3; ++chan ) {
+                                total[chan] += w * colors[wi][chan];
+                                // Keep them unchanged (for debugging):
+                                // total[chan] = imagedata.data[ chan + 4*( col + imagedata.width*row ) ]/255.;
+                            }
+                        }
+                        
+                        // // Update our particleSystem position buffer if it's the right size.
+                        // if( particleSystemPositions !== null ) {
+                        //     for( var chan = 0; chan < 3; ++chan ) {
+                        //         particleSystemPositions[ chan + 3*( col + imagedata.width*row ) ] = total[chan];
+                        //     }
+                        // }
+                        
+                        // Scale by 255. and clamp the color.
+                        for( var chan = 0; chan < 3; ++chan ) {
+                            total[chan] = Math.min( 255, Math.max( 0, 255*total[chan] ) );
+                        }
+                        
+                        // Set the imagedata.
+                        for( var chan = 0; chan < 3; ++chan ) {
+                            imagedata.data[ chan + 4*( col + imagedata.width*row ) ] = total[chan];
+                        }
+                        
+                        // // Update our particleSystem color buffer if it's the right size.
+                        // // (We do this here, after clamping.)
+                        // if( particleSystemColors !== null ) {
+                        //     for( var chan = 0; chan < 3; ++chan ) {
+                        //         particleSystemColors[ chan + 3*( col + imagedata.width*row ) ] = total[chan]/255.;
+                        //     }
+                        // }
+                    }
+                }
+                
+                ctx.putImageData( imagedata, 0, 0 );
+            }
+
+
+
+            function drawDifferenceImage()
+            {
+                // Create a context2d if we don't have one yet.
+                if( !( 'ctx' in img_difference ) ) {
+                    var temp = document.getElementById('img_difference');
+                    img_difference.ctx = temp.getContext("2d");
+                    // Initialize the canvas by drawing the original image into it.
+                    img_difference.ctx.drawImage( img, 0, 0, img.naturalWidth, img.naturalHeight );
+                }
+                var ctx=img_difference.ctx;
+                                // Create an imagedata if we don't have one yet.
+                if( !( 'imagedata' in img_difference ) ) {
+                    // ctx.getImageData() gets a copy of the context's imagedata.
+                    img_difference.imagedata = ctx.getImageData( 0, 0, img.naturalWidth, img.naturalHeight );
+                }
+                var imagedata = img_difference.imagedata;
+                var reconstuctdata=recolor_data.imagedata;
+
+                // Iterate over every pixel and set it.
+                var diff = [ 0., 0., 0. ];
+                for( var row = 0; row < imagedata.height; ++row ) {
+                    for( var col = 0; col < imagedata.width; ++col ) {
+                        // Initialize the sum to 0.
+                        for( var chan = 0; chan < 3; ++chan ) {
+                            diff[chan] = 0.;
+                        }
+                        
+                        // Scale by 255. and clamp the color.
+                        for( var chan = 0; chan < 3; ++chan ) {
+                            diff[chan] = Math.abs(reconstuctdata.data[ chan + 4*( col + imagedata.width*row ) ]-imagedata.data[ chan + 4*( col + imagedata.width*row ) ]);
+                        }
+                        
+                        // Set the imagedata.
+                        for( var chan = 0; chan < 3; ++chan ) {
+                            imagedata.data[ chan + 4*( col + imagedata.width*row ) ] = Math.min( 255, Math.max( 0, diff[chan] ) );
+                        }
+    
+                    }
+                }
+                
+                ctx.putImageData( imagedata, 0, 0 );
+            }
+
+
+            
+            function createAxisLine( position0, position1, color0, color1, dashed ) {
+                // From: http://soledadpenades.com/articles/three-js-tutorials/drawing-the-coordinate-axes/
+                var geom = new THREE.Geometry();
+                var mat;
+                
+                if( dashed ) {
+                    mat = new THREE.LineDashedMaterial({ linewidth: 1, color: 0xffffff, vertexColors: THREE.VertexColors, dashSize: 10/255., gapSize: 5/255. });
+                } else {
+                    mat = new THREE.LineBasicMaterial({ linewidth: 2, color: 0xffffff, vertexColors: THREE.VertexColors });
+                }
+                
+                // Lines blend colors.
+                // From: http://threejs.org/examples/webgl_lines_colors.html
+                geom.colors = [ color0.clone(), color1.clone() ];
+                
+                geom.vertices.push( position0.clone() );
+                geom.vertices.push( position1.clone() );
+                geom.computeLineDistances(); // This one is SUPER important, otherwise dashed lines will appear as simple plain lines
+                
+                var axis = new THREE.Line( geom, mat, THREE.LinePieces );
+                
+                return axis;
+            }
+
+            function buildAxes( length )
+            {
+                // From: http://soledadpenades.com/articles/three-js-tutorials/drawing-the-coordinate-axes/
+                var axes = new THREE.Object3D();
+                axes.add( createAxisLine( new THREE.Vector3( 0, 0, 0 ), new THREE.Vector3( length, 0, 0 ), new THREE.Color( 0x000000 ), new THREE.Color( 0xFF0000 ), false ) ); // +X
+                // axes.add( buildAxis( new THREE.Vector3( 0, 0, 0 ), new THREE.Vector3( -length, 0, 0 ), 0xFF0000, true) ); // -X
+                axes.add( createAxisLine( new THREE.Vector3( 0, 0, 0 ), new THREE.Vector3( 0, length, 0 ), new THREE.Color( 0x000000 ), new THREE.Color( 0x00FF00 ), false ) ); // +Y
+                // axes.add( buildAxis( new THREE.Vector3( 0, 0, 0 ), new THREE.Vector3( 0, -length, 0 ), 0x00FF00, true ) ); // -Y
+                axes.add( createAxisLine( new THREE.Vector3( 0, 0, 0 ), new THREE.Vector3( 0, 0, length ), new THREE.Color( 0x000000 ), new THREE.Color( 0x0000FF ), false ) ); // +Z
+                // axes.add( buildAxis( new THREE.Vector3( 0, 0, 0 ), new THREE.Vector3( 0, 0, -length ), 0x0000FF, true ) ); // -Z
+                
+                // XY
+                axes.add( createAxisLine( new THREE.Vector3( length, 0, 0 ), new THREE.Vector3( length, length, 0 ), new THREE.Color( 0xFF0000 ), new THREE.Color( 0xFFFF00 ), false ) );
+                axes.add( createAxisLine( new THREE.Vector3( 0, length, 0 ), new THREE.Vector3( length, length, 0 ), new THREE.Color( 0x00FF00 ), new THREE.Color( 0xFFFF00 ), false ) );
+                
+                // YZ
+                axes.add( createAxisLine( new THREE.Vector3( 0, length, 0 ), new THREE.Vector3( 0, length, length ), new THREE.Color( 0x00FF00 ), new THREE.Color( 0x00FFFF ), false ) );
+                axes.add( createAxisLine( new THREE.Vector3( 0, 0, length ), new THREE.Vector3( 0, length, length ), new THREE.Color( 0x0000FF ), new THREE.Color( 0x00FFFF ), false ) );
+                
+                // XZ
+                axes.add( createAxisLine( new THREE.Vector3( length, 0, 0 ), new THREE.Vector3( length, 0, length ), new THREE.Color( 0xFF0000 ), new THREE.Color( 0xFF00FF ), false ) );
+                axes.add( createAxisLine( new THREE.Vector3( 0, 0, length ), new THREE.Vector3( length, 0, length ), new THREE.Color( 0x0000FF ), new THREE.Color( 0xFF00FF ), false ) );
+                
+                // XY from 1,1,1
+                axes.add( createAxisLine( new THREE.Vector3( length, length, length ), new THREE.Vector3( length, length, 0 ), new THREE.Color( 0xFFFFFF ), new THREE.Color( 0xFFFF00 ), false ) );
+                
+                // YZ from 1,1,1
+                axes.add( createAxisLine( new THREE.Vector3( length, length, length ), new THREE.Vector3( 0, length, length ), new THREE.Color( 0xFFFFFF ), new THREE.Color( 0x00FFFF ), false ) );
+                
+                // XZ from 1,1,1
+                axes.add( createAxisLine( new THREE.Vector3( length, length, length ), new THREE.Vector3( length, 0, length ), new THREE.Color( 0xFFFFFF ), new THREE.Color( 0xFF00FF ), false ) );
+                
+                return axes;
+            }
+            
+            function clearOverlayMesh()
+            {
+                if( overlayMesh !== null ) {
+                    if( overlayMesh.edges !== undefined ) scene.remove( overlayMesh.edges );
+                    if( overlayMesh.vertices !== undefined ) scene.remove( overlayMesh.vertices );
+                    if( overlayMesh.verticesRims !== undefined ) scene.remove( overlayMesh.verticesRims );
+                }
+                
+                overlayMesh = null;
+                
+                // Disable the add one color button.
+                document.getElementById( 'addOneColor' ).disabled = true;
+                
+                clearWeights();
+            }
+            function loadOverlayMesh( hull, filename )
+            {
+                console.log( "loadOverlayMesh( ... ):" );
+                console.log( "hull:", hull );
+                console.log( "filename:", filename );
+                
+                if( filename === undefined ) {
+                    filename = "overlayMesh-unnamed.js";
+                }
+                
+                // Don't clear if the JSON says not to.
+                if( hull.clear === undefined || hull.clear ) {
+                    clearOverlayMesh();
+                }
+                // Create an overlayMesh object if we don't have one.
+                if( overlayMesh === null ) {
+                    // Create an empty object.
+                    overlayMesh = {};
+                    overlayMesh.filename = filename;
+                }
+                
+                // Enable the random palette color button.
+                // NOTE: Do this after clearOverlayMesh(), because that
+                //       disables the button.
+                document.getElementById( 'addOneColor' ).disabled = false;
+                
+                /// Create the overlayMesh.edges
+                if( hull.faces !== undefined && hull.faces.length > 0 ) {
+                    var geometry = new THREE.Geometry();
+                    
+                    /// "Dumb" faces which are each a triplet of positions.
+                    // Make them smart (faces should be indices into hull.vs).
+                    var smart_faces = [];
+                    // Iterate over the faces.
+                    for( var fi = 0; fi < hull.faces.length; ++fi ) {
+                        var dumb_face = hull.faces[fi];
+                        smart_faces.push( [] );
+                        // Each vertex of the face is a 3D position. Find the index of this position in hull.vs;
+                        for( var fvi = 0; fvi < 3; ++fvi ) {
+                            var vert = dumb_face[fvi];
+                            
+                            // Find the index of vert in hull.vs.
+                            var hull_vertex_index = -1;
+                            for( var vi = 0; vi < hull.vs.length; ++vi ) {
+                                if( vert[0] == hull.vs[vi][0] && vert[1] == hull.vs[vi][1] && vert[2] == hull.vs[vi][2] ) {
+                                    hull_vertex_index = vi;
+                                    break;
+                                }
+                            }
+                            if( -1 === hull_vertex_index ) { console.error("Overlay mesh faces use a non-existent vertex.") }
+                            smart_faces[fi].push( hull_vertex_index );
+                        }
+                    }
+                    
+                    
+                    /// "Smart" faces which are indices into vertices.
+                    // smart_faces = hull.faces;
+                    // Copy vertices
+                    for( var i = 0; i < hull.vs.length; ++i ) {
+                        var vert = hull.vs[i];
+                        
+                        var linear_rgb = sRGB_to_LinearRGB( [ vert[0]/255., vert[1]/255., vert[2]/255. ] );
+                        
+                        geometry.vertices.push( new THREE.Vector3( linear_rgb[0], linear_rgb[1], linear_rgb[2] ) );
+                    }
+                    // Copy faces
+                    for( var i = 0; i < hull.faces.length; ++i ) {
+                        var face = smart_faces[i]; // hull.faces[i];
+                        geometry.faces.push( new THREE.Face3( face[0], face[1], face[2] ) );
+                    }
+                    
+                    
+                    geometry.verticesNeedUpdate = true;
+                    geometry.elementsNeedUpdate = true;
+                    
+                    var edge_material = new THREE.MeshBasicMaterial({
+                        color: 0xFFFFFF,
+                        wireframe: true,
+                        wireframeLinewidth: 4
+                        });
+                    
+                    overlayMesh.edges = new THREE.Mesh( geometry, edge_material );
+                    scene.add( overlayMesh.edges );
+                }
+                
+                
+                /// Create the overlayMesh.vertices
+                if( hull.vs.length > 0 ) {
+                    if( overlayMesh.vertices === undefined ) {
+                        overlayMesh.vertices = new THREE.Object3D();
+                        overlayMesh.verticesRims = new THREE.Object3D();
+                        // We will keep a copy of the original position in case we later move them.
+                        overlayMesh.originalPositions = [];
+                        
+                        scene.add( overlayMesh.vertices );
+                        scene.add( overlayMesh.verticesRims );
+                    }
+                    // Create a circle for each vertex
+                    var radius = hull.vertex_radius || 5./255;
+                    var radiusRim = hull.vertex_rim_radius || radius*1.2;
+                    var colorRim = new THREE.Color( hull.vertex_rim_color || 0xFFFFFF );
+                    var segments = 32;
+                    var circleGeometry = new THREE.SphereGeometry( radius, segments, segments );
+                    var circleRimGeometry = new THREE.CircleGeometry( radiusRim, segments );
+                    var circleRimMaterial = new THREE.MeshBasicMaterial({ color: colorRim });
+                    for( var i = 0; i < hull.vs.length; ++i ) {
+                        var vert = hull.vs[i];
+                        var color = new THREE.Vector3( vert[0]/255., vert[1]/255., vert[2]/255. );
+                        color.clampScalar( 0., 1. );
+                        var circleMaterial = new THREE.MeshBasicMaterial({
+                            color: new THREE.Color( color.x, color.y, color.z )
+                            });
+                        
+                        var circle = new THREE.Mesh( circleGeometry, circleMaterial );
+                        var linear_rgb = sRGB_to_LinearRGB( [ vert[0]/255., vert[1]/255., vert[2]/255. ] );
+                        circle.position.set( linear_rgb[0], linear_rgb[1], linear_rgb[2] );
+                        // Make a copy of the position to have in case we later move it.
+                        overlayMesh.originalPositions.push( circle.position.clone() );
+                        
+                        overlayMesh.vertices.add( circle );
+                        
+                        // HACK: A white rim.
+                        circle = new THREE.Mesh( circleRimGeometry, circleRimMaterial );
+                        circle.position.set( linear_rgb[0], linear_rgb[1], linear_rgb[2] );
+                        overlayMesh.verticesRims.add( circle );
+                    }
+                }
+                
+                console.log("use loaded palette to update layers");
+                console.log(hull.vs);
+                updateLayers(hull.vs);
+
+                render();                
+                // For debugging, drop a weights file with uniform weights.
+                // testLoadWeights();
+            }
+            function loadableOverlayMesh( hull )
+            {
+                // We can load an overlay mesh from `hull` if it contains 'faces'.
+                return 'vs' in hull;
+            }
+            function saveOverlayMeshJSON() {
+                if( overlayMesh === null ) {
+                    console.error( "saveOverlayMeshJSON(): There is no overlay mesh to save." );
+                    return null;
+                }
+                
+                // Create the dictionary.
+                var data = {};
+                
+                // Add vertices to it.
+                data.vs = [];
+                for( var vertex_index = 0; vertex_index < overlayMesh.vertices.children.length; ++vertex_index ) {
+                    var pos = overlayMesh.vertices.children[ vertex_index ].position;
+                    data.vs.push( [ pos.x*255., pos.y*255., pos.z*255. ] );
+                }
+                
+                // Add faces if we have them.
+                if( overlayMesh.edges !== undefined ) {
+                    data.faces = [];
+                    
+                    var geom = overlayMesh.edges.geometry;
+                    for( var face_index = 0; face_index < geom.faces.length; ++face_index ) {
+                        var face = geom.faces[ face_index ];
+                        face = [ face.a, face.b, face.c ];
+                        
+                        /*
+                        // Smart format (face contains vertex indices).
+                        data.faces.push( face );
+                        */
+                        
+                        // Dumb format (face contains vertex positions).
+                        for( var face_vertex_index = 0; face_vertex_index < face.length; ++face_vertex_index ) {
+                            var vertex_index = face[ face_vertex_index ];
+                            // Grab vertices from data.vs, because they have already been
+                            // converted to an array and multiplied by 255.
+                            face[ face_vertex_index ] = data.vs[ vertex_index ];
+                        }
+                        data.faces.push( face );
+                    }
+                }
+                
+                return data;
+            }
+            function saveOverlayMeshPalette( basename )
+            {
+                if( overlayMesh === null ) {
+                    console.error( "saveOverlayMeshPalette(): There is no overlay mesh to save." );
+                    return null;
+                }
+                
+                // Create the dictionary.
+                var kEdgePixels = 50;
+                
+                var canvas = document.createElement('canvas');
+                canvas.width = kEdgePixels*overlayMesh.vertices.children.length;
+                canvas.height = kEdgePixels;
+                var ctx = canvas.getContext("2d");
+                // Add colors to it.
+                for( var vertex_index = 0; vertex_index < overlayMesh.vertices.children.length; ++vertex_index ) {
+                    var pos = overlayMesh.vertices.children[ vertex_index ].position;
+                    var color = [ pos.x*255., pos.y*255., pos.z*255. ];
+                    for( var i = 0; i < color.length; ++i ) color[i] = String( parseInt( Math.max( 0, Math.min( 255, color[i] ) ) ) );
+                    ctx.fillStyle = "rgb( " + color[0] + ", " + color[1] + ", " + color[2] + " )";
+                    ctx.fillRect( vertex_index*kEdgePixels, 0, kEdgePixels, kEdgePixels );
+                }
+                
+                var filename = overlayMesh.filename.replace( /\.js$/, "" ) + "-modified.png";
+                if( basename !== undefined && basename.length > 0 ) filename = basename + "-" + filename;
+                blobPNGFromCanvas(
+                    canvas,
+                    function( blob ) { saveAs( blob, filename ); }
+                );
+            }
+            function saveOverlayMesh( basename )
+            {
+                if( basename === undefined ) basename = '';
+                
+                var data = saveOverlayMeshJSON();
+                // saveOverlayMeshJSON() will return null if there is nothing to save.
+                if( data === null ) return;
+                
+                // Make the output filename.
+                var filename = overlayMesh.filename.replace( /\.js$/, "" ) + "-modified.js";
+                if( basename.length > 0 ) filename = basename + "-" + filename;
+                
+                // Now save data as JSON.
+                var blob = new Blob([ JSON.stringify( data ) ], {type: "application/json"});
+                saveAs( blob, filename );
+                
+                saveOverlayMeshPalette( basename );
+            }
+            
+            function clearWeights()
+            {
+                weights = null;
+                // Hide the canvas
+                var recolor = document.getElementById('image_reconstructed');
+                recolor.width = 0;
+                recolor.height = 0;
+                document.getElementById('reconstruction_holder').style.display = "none";
+                recolor_data = null;
+                
+                // Call onWindowResize() every time something might
+                // change the position of the THREE.js view inside the page.
+                onWindowResize();
+            }
+            function loadableWeights( parsed_weights )
+            {
+                return 'weights' in parsed_weights;
+            }
+
+            function getLayerImg(weights, ind)
+            {
+                // Get the colors.
+                var colors = [];
+                colors.length = overlayMesh.vertices.children.length;
+                for( var i = 0; i < overlayMesh.vertices.children.length; ++i )
+                {
+                    if (colorful_flag=="colorful")
+                    {
+                        var pos = overlayMesh.vertices.children[i].position;
+                        colors[i] = [ pos.x, pos.y, pos.z ];
+                    }
+                    else if (colorful_flag=="gray")
+                    {
+                         colors[i]=[1.0,1.0,1.0];
+                    }
+                }
+
+
+                img = document.getElementById('image');
+                canvas=canvasFromImage(img);
+                ctx=canvas.getContext("2d");
+                var imagedata = ctx.getImageData( 0, 0, img.naturalWidth, img.naturalHeight );
+                
+
+                // Iterate over every pixel and set it.
+                for( var row = 0; row < imagedata.height; ++row ) {
+                    for( var col = 0; col < imagedata.width; ++col ) {
+
+                        // // Set the imagedata. remember to scale 255. first three channels are same value, since each layer is grayscale image. imagedata is four channel image.
+                        // for( var chan = 0; chan < 3; ++chan ) {
+                        //     imagedata.data[ chan + 4*( col + imagedata.width*row ) ] = Math.min(255, Math.max(0, 255*weights[row][col][ind]*colors[ind][chan]));
+                        // }
+
+
+
+                        // Set the imagedata. remember to scale 255. first three channels are same value, since each layer is grayscale image. imagedata is four channel image.
+                        for( var chan = 0; chan < 3; ++chan ) {
+                            imagedata.data[ chan + 4*( col + imagedata.width*row ) ] = Math.min(255, Math.max(0, 255*colors[ind][chan]));
+                        }
+                        //fourth channel is transparency, (we use weights value as transparency)
+                        imagedata.data[ 3 + 4*( col + imagedata.width*row ) ]= Math.min(255, Math.max(0, 255*weights[row][col][ind]));
+                        
+
+                    }
+                }
+                return imagedata;
+            }
+            function hexToRgb(hex) {
+                hex = hex.replace(/[^0-9A-F]/gi, '');
+                var bigint = parseInt(hex, 16);
+                var r = (bigint >> 16) & 255;
+                var g = (bigint >> 8) & 255;
+                var b = bigint & 255;
+                return [r, g, b]
+            }
+
+            function rgbToHex(rgb) {
+                var r=rgb[0];
+                var g=rgb[1];
+                var b=rgb[2];
+                return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+            }
+
+            var global_color_picker = null;
+            function imagedata_to_image(imagedata, ind) 
+            {
+                var canvas = document.createElement('canvas');
+                var ctx = canvas.getContext('2d');
+                canvas.width = imagedata.width;
+                canvas.height = imagedata.height;
+                ctx.putImageData(imagedata, 0, 0);
+
+                var image = new Image();
+                image.src = canvas.toDataURL();
+                image.onclick = function() {
+
+                    var rgb_color=[imagedata.data[0],imagedata.data[1],imagedata.data[2]];
+
+                    var input = document.createElement('input');
+                    input.setAttribute("type", "color");
+                    input.setAttribute("value", rgbToHex(rgb_color));
+                    input.setAttribute("id", String(ind));
+
+                    input.onchange=function(){
+
+                        //also should show the new palette in the 3D space.
+                        //need modify overlaymesh.vertices.How?
+                        //should change palette and call update layers
+                        ind=parseInt(input.id);
+                        console.log(ind);
+                        var pos=overlayMesh.vertices.children[ind].position;
+                        console.log(input.value);
+                        console.log(hexToRgb(input.value));
+                        pos.x=hexToRgb(input.value)[0]/255.0
+                        pos.y=hexToRgb(input.value)[1]/255.0
+                        pos.z=hexToRgb(input.value)[2]/255.0
+                        console.log("change color");
+                        console.log(pos);
+                        setVertexIndexToPosition( ind, pos );
+                        processMouseChange();
+                        render();
+                    };
+                    input.click();
+                    global_color_picker = input;
+                };
+
+                // return image;
+                return [image];
+            }
+
+            function drawLayerImage(){
+                // show layers in layer_holder:
+                var layer_show=document.getElementById("layer_holder");
+                
+                // Clear the old layers
+                // From: https://stackoverflow.com/questions/3955229/remove-all-child-elements-of-a-dom-node-in-javascript
+                while( layer_show.firstChild ) { layer_show.removeChild(layer_show.firstChild); }
+                
+                for (var i = 0; i < weights[0][0].length; ++i)
+                {
+                    var layerImgData = getLayerImg(weights, i);
+                    var layerImg=imagedata_to_image(layerImgData, i);
+                    layer_show.append( layerImg[0] );
+                    // layer_show.append( layerImg[1] );
+
+                }
+            }
+
+
+            function loadWeights( parsed_weights )
+            {
+                console.log( "loadWeights( ... ):" );
+                // console.log( parsed_weights );
+                
+                clearWeights();
+                
+                // If we don't have an image or an overlay mesh, it doesn't make sense
+                // to load weights.
+                if( img == null || overlayMesh.vertices == null ) {
+                    console.error( "loadWeights(): No loaded image and overlay mesh." );
+                    return;
+                }
+                
+                // 'weights' should be an img.height-length array containing
+                // img.width-length arrays of overlayMesh.vertices.children.length arrays of
+                // floating point weight values. Each inner-most array should sum
+                // to 1.
+
+                console.log(overlayMesh.vertices.children.length)
+
+                if( parsed_weights.length !== img.naturalHeight ||
+                    parsed_weights[0].length !== img.naturalWidth ||
+                    parsed_weights[0][0].length !== overlayMesh.vertices.children.length
+                    ) {
+                    console.error( "loadWeights(): weights doesn't have the right dimensions." );
+                    return;
+                }
+                
+                weights = parsed_weights;
+                
+                // Check that each weights sum to 1.
+                /*
+                for( var row = 0; row < weights.length; ++row ) {
+                    for( var col = 0; col < weights[row].length; ++col ) {
+                        var total = 0.;
+                        for( var wi = 0; wi < weights[row][col].length; ++wi ) {
+                            total += weights[row][col][wi];
+                        }
+                        if( Math.abs( 1. - total ) > 1e-4 ) {
+                            console.warn( "loadWeights() encountered a pixel whose weights don't sum to 1." );
+                        }
+                    }
+                }
+                */
+                
+                // draw layers in layer_holder canvas
+                drawLayerImage();
+
+
+                var recolor = document.getElementById('image_reconstructed');
+                // Create a canvas object for it and write to it.
+                recolor.width = img.naturalWidth;
+                recolor.height = img.naturalHeight;
+                document.getElementById('reconstruction_holder').style.display = "block";
+                
+                recolor_data = {};
+                drawRecolorImage();
+                // Open the canvas in a new window on click.
+                recolor.onclick = function() {
+                    var kMIMEType = "image/png";
+                    var dataURL = recolor.toDataURL( kMIMEType );
+                    // Open in a new window.
+                    window.open( dataURL );
+                    };
+                
+                // Re-create the particles.
+                // By default, we only create particles for unique colors.
+                // Now, we want particles for all pixels, because two pixels
+                // with the same color may have different weights.
+                // createParticles( { 'only_unique_pixels': false, 'clear_overlay_mesh': false } );
+            
+                
+                //draw difference image between original and reconstructed
+                var img_diff = document.getElementById('img_difference');
+                // Create a canvas object for it and write to it.
+                img_diff.width = img.naturalWidth;
+                img_diff.height = img.naturalHeight;
+                document.getElementById('img_difference_holder').style.display = "block";
+                
+                img_difference = {};
+                console.log("draw difference image");
+                drawDifferenceImage();
+
+                // Call onWindowResize() every time something might
+                // change the position of the THREE.js view inside the page.
+                onWindowResize();
+            }
+
+
+
+            function testLoadWeights()
+            {
+                var w = [];
+                for( var row = 0; row < img.naturalHeight; ++row ) {
+                    w[row] = [];
+                    for( var col = 0; col < img.naturalWidth; ++col ) {
+                        w[row][col] = [];
+                        for( var wi = 0; wi < overlayMesh.vertices.children.length; ++wi ) {
+                            // Set equal weights for every hull vertex.
+                            w[row][col][wi] = 1./overlayMesh.vertices.children.length;
+                        }
+                    }
+                }
+                
+                var payload = { 'weights': w };
+                
+                console.log( "loadableWeights():", loadableWeights( payload ) );
+                loadWeights( payload );
+            }
+            
+            function mouseFromEvent( event ) {
+                var mouse = new THREE.Vector2();
+                
+                mouse.x = ( event.offsetX / container.offsetWidth ) * 2 - 1;
+                mouse.y = - ( event.offsetY / container.offsetHeight ) * 2 + 1;
+                
+                return mouse;
+            }
+            var mouseActionHandler = {};
+            function onDocumentMouseDown( event ) {
+                // TODO Q: Should I call event.preventDefault() or are the controls doing that?
+                
+                // We could miss a mouse up event if the user switches apps in the middle
+                // of a drag. Always cleanup first.
+                if( 'cleanup' in mouseActionHandler ) mouseActionHandler.cleanup();
+                mouseActionHandler = {};
+                
+                // A function to try the various things we might want to do on mouse down.
+                function chooseMouseHandlers( event ) {
+                    // If we have an overlay mesh and weights, pick an overlay mesh vertex.
+                    var handler = null;
+                    
+                    handler = mouseHandlersForDownOnOverlayMeshVertex( event );
+                    if( handler !== null ) return handler;
+                    
+                    // If no one handled it, use an empty handler.
+                    handler = {};
+                    
+                    return handler;
+                }
+                mouseActionHandler = chooseMouseHandlers( event );
+                
+                // Render at the end. Something might have happened.
+                render();
+            }
+            function onDocumentMouseMove( event ) {
+                // TODO Q: Should I call event.preventDefault() or are the controls doing that?
+                
+                if( 'drag' in mouseActionHandler ) mouseActionHandler.drag( event );
+                
+                // Render at the end. Something might have happened.
+                render();
+            }
+            function onDocumentMouseUp( event ) {
+                // TODO Q: Should I call event.preventDefault() or are the controls doing that?
+                
+                if( 'up' in mouseActionHandler ) mouseActionHandler.up( event );
+                if( 'cleanup' in mouseActionHandler ) mouseActionHandler.cleanup();
+                
+                // Reset the mouse action handler.
+                mouseActionHandler = {};
+                
+                // Render at the end. Something might have happened.
+                render();
+            }
+            
+            function setVertexIndexToPosition( vertex_index, pos ) {
+                // Set the position of the vertex.
+                overlayMesh.vertices.children[ vertex_index ].position.copy( pos );
+                // Set the color of the vertex.
+                var color = pos.clone().clampScalar( 0., 1. );
+                overlayMesh.vertices.children[ vertex_index ].material.color.setRGB( color.x, color.y, color.z );
+                // Set the position of the highlight rim around vertex.
+                overlayMesh.verticesRims.children[ vertex_index ].position.copy( pos );
+                // Set the position of the vertex for the overlay mesh edges.
+                if( 'edges' in overlayMesh ) {
+                    overlayMesh.edges.geometry.vertices[ vertex_index ].copy( pos );
+                    overlayMesh.edges.geometry.verticesNeedUpdate = true;
+                }
+                
+            }
+
+            function processMouseChange() {
+                    // TODO: send new palette to backend and call update layers. 
+                    // Get the colors.
+                    var colors = [];
+                    colors.length = overlayMesh.vertices.children.length;
+                    for( var i = 0; i < overlayMesh.vertices.children.length; ++i )
+                    {
+                        var pos = overlayMesh.vertices.children[i].position;
+                        colors[i] = [ pos.x*255, pos.y*255, pos.z*255 ];
+                    }
+    
+                    console.log("new colors");
+                    console.log(colors);
+                    if( updateLayersInProgress === false ) {
+                        updateLayers(colors);
+                    }
+    
+                    // Update the weighted image, actually, this function is always computing reconstruction image, since the updatelayers function will change weights according to new palette. 
+                    // drawRecolorImage();
+            }
+
+            function mouseHandlersForDownOnOverlayMeshVertex( event ) {
+                // Returns an object containing optional 'drag' and 'up' and 'cleanup' functions.
+                // Returns null if not handling.
+                
+                // If there is no overlay mesh, return null;
+                if( overlayMesh == null || overlayMesh.vertices == null || weights == null ) return null;
+                
+                // Pick the overlayMesh.verticesRims.
+                var mouse = mouseFromEvent( event );
+                picking_data.raycaster.setFromCamera( mouse, camera );
+                // Note: intersects is sorted by distance.
+                var intersects = picking_data.raycaster.intersectObjects( overlayMesh.verticesRims.children );
+                // If we don't pick anything, return null.
+                if( intersects.length == 0 ) {
+                    return null;
+                }
+                
+                // Get the picked object.
+                var picked = intersects[0];
+                // We need the index of the picked vertex.
+                var picked_vertex_index = overlayMesh.verticesRims.children.indexOf( picked.object );
+                
+                // If this is a right-mouse button, reset its position and return.
+                if( event.button === 2 ) {
+                    setVertexIndexToPosition( picked_vertex_index, overlayMesh.originalPositions[ picked_vertex_index ] );
+                    // Turn off camera controls for the duration of this drag operation.
+                    controls.enabled = false;
+                    // Turn them back on afterwards.
+                    return { 'cleanup': function() { controls.enabled = true; } };
+                }
+                
+                // If we are here, set the vertex up for mouse drags.
+                
+                // Turn off camera controls.
+                controls.enabled = false;
+                // Set the mouse cursor to a move cursor.
+                container.style.cursor = 'move';
+                
+                // Move the plane to the position of the picked object.
+                // We intersect with this plane on mouse drag to find the new
+                // position for the picked vertex.
+                picking_data.plane.position.copy( picked.point );
+                // Always set the plane's orientation to look at the camera.
+                // UPDATE: We don't need to orient the plane. That happens during render().
+                // UPDATE 2: Since we change the plane's position, the plane's matrixWorld
+                //           needs to be updated, which also happens during render().
+                
+                // Save the initial world-space positions of the picked point and the overlay mesh vertex.
+                var down_world_pos = picked.point.clone();
+                var down_vertex_pos = overlayMesh.vertices.children[ picked_vertex_index ].position.clone();
+                
+
+                var result = {};
+                
+                result.drag = function( event ) {
+                    // Pick the picking plane.
+                    var mouse = mouseFromEvent( event );
+                    picking_data.raycaster.setFromCamera( mouse, camera );
+                    var intersects = picking_data.raycaster.intersectObject( picking_data.plane );
+                    if( intersects.length === 0 ) {
+                        console.error( "While dragging, picking with the plane returned no intersections." )
+                    }
+                    var picked = intersects[0];
+                    // Get the world space offset vector from the initial pick point
+                    // to its current position.
+                    var offset = picked.point.clone().sub( down_world_pos );
+                    // Update the picked_vertex_index's position (vertices, verticesRims, and edges.geometry.vertices).
+                    var pos = down_vertex_pos.clone().add( offset );
+                    setVertexIndexToPosition( picked_vertex_index, pos );
+                    
+                    processMouseChange();
+                    };
+                
+                result.up = function() {
+                    // Update layers on mouse up.
+                    processMouseChange();
+                    };
+
+                result.cleanup = function() {
+                    // Re-enable camera trackpad controls.
+                    controls.enabled = true;
+                    
+                    // Put the cursor back.
+                    container.style.cursor = 'auto';
+                    };
+                return result;
+            }
+            
+            function getLookVector() {
+                // normalize( controls.target - camera.position )
+                return controls.target.clone().sub( camera.position ).normalize();
+            }
+            function initControls( camera, container ) {
+                var origin = new THREE.Vector3( .5, .5, .5 );
+                
+                if( container === undefined ) container = document;
+                
+                controls = new THREE.TrackballControls( camera, container );
+                controls.target.copy( origin );
+                
+                controls.rotateSpeed = 1.0;
+                controls.zoomSpeed = 1.2;
+                controls.panSpeed = 0.8;
+
+                controls.noZoom = true;
+                controls.noPan = true;
+                // Keep the horizon level? No.
+                camera.noRoll = false;
+
+                controls.staticMoving = true;
+                // dynamicDampingFactor only has an effect when staticMoving is false.
+                // Setting it to 0 allows constant-speed rotation in a loop.
+                controls.dynamicDampingFactor = 0.0;
+
+                // We need this because we wouldn't otherwise call render().
+                // Namely, we do not call render() in our animate() function called
+                // many times per second.
+                controls.addEventListener( 'change', render );
+
+                // Set up the inertial rotation checkbox.
+                document.getElementById( 'intertia' ).addEventListener( 'change', function() { controls.staticMoving = !document.getElementById('intertia').checked; } );
+                document.getElementById( 'intertia' ).checked = !controls.staticMoving;
+                
+                document.getElementById( 'look_from_white' ).addEventListener( 'click', function() {
+                    // First reset the controls
+                    controls.reset();
+                    controls.target.copy( origin );
+                    
+                    var targetToCameraLength = camera.position.clone().sub( controls.target ).length();
+                    
+                    camera.position.set( 1, 1, 1 );
+                    camera.position.sub( controls.target ).setLength( targetToCameraLength ).add( controls.target );
+                    } );
+                
+                
+                // We need these handlers for interacting with the 3D scene.
+                // As of now, that only consists of moving overlayMesh.vertices.
+                // TODO Q: Why can't I set these on renderer.domElement?
+                container.addEventListener( 'mousemove', onDocumentMouseMove, false );
+                container.addEventListener( 'mousedown', onDocumentMouseDown, false );
+                container.addEventListener( 'mouseup', onDocumentMouseUp, false );
+                
+                // Prepare for mouse picking. We need a plane and a projector.
+                picking_data.plane = new THREE.Mesh( new THREE.PlaneGeometry( 5000, 5000, 8, 8 ), new THREE.MeshBasicMaterial( { color: 0xff0000 } ) );
+                picking_data.plane.visible = false;
+                scene.add( picking_data.plane );
+                
+                picking_data.raycaster = new THREE.Raycaster();
+            }
+            
+            function init3D() {
+
+                container = document.getElementById( 'container' );
+
+                //
+
+                camera = new THREE.PerspectiveCamera( 45, container.offsetWidth / container.offsetHeight, 1, 10 );
+                camera.position.set( .5, .5, 3 );
+                camera.lookAt( new THREE.Vector3( .5, .5, .5 ) );
+                // camera = new THREE.OrthographicCamera( -1, 2, 2, -1, 1, 4 );
+                // camera.position.z = 4;
+
+                scene = new THREE.Scene();
+                // scene.fog = new THREE.Fog( 0x050505, 2000, 3500 );
+                
+                //
+                
+                // scene.add( createParticles() );
+                scene.add( buildAxes( 1. ) );
+                
+                //
+
+                renderer = new THREE.WebGLRenderer( {
+                    antialias: true,
+                    // This is necessary for saving screenshots with .toDataURL("image/png")
+                    preserveDrawingBuffer: kScreenshots // true
+                    } );
+                // renderer.setClearColor( scene.fog.color );
+                renderer.setClearColor( new THREE.Color( '#888888' ) );
+                // I tried setting this to 3., and the canvas appears stretched.
+                // This next line always draws high res.
+                // renderer.setPixelRatio( kScreenshots ? 2. : window.devicePixelRatio );
+                renderer.setPixelRatio( window.devicePixelRatio );
+                renderer.setSize( container.offsetWidth, container.offsetHeight );
+
+                container.appendChild( renderer.domElement );
+
+                //
+
+                /*
+                stats = new Stats();
+                stats.domElement.style.position = 'absolute';
+                stats.domElement.style.top = '0px';
+                stats.domElement.style.right = '0px';
+                container.appendChild( stats.domElement );
+                */
+
+                //
+
+                window.addEventListener( 'resize', onWindowResize, false );
+                
+                initControls( camera, container );
+                
+                // Start drawing
+                animate();
+                render();
+            }
+
+            function onWindowResize() {
+                console.log( 'onWindowResize' );
+
+                camera.aspect = container.offsetWidth / container.offsetHeight;
+                camera.updateProjectionMatrix();
+
+                renderer.setSize( container.offsetWidth, container.offsetHeight );
+                
+                controls.handleResize();
+                
+                render();
+            }
+
+            //
+
+            function animate() {
+                requestAnimationFrame( animate );
+                controls.update();
+                // If we have dynamic movement, we need to call render every frame.
+                if( !controls.staticMoving ) render();
+            }
+
+            function render() {
+                // HACK: Update overlay mesh vertices' white rims.
+                if( overlayMesh !== null && overlayMesh.verticesRims !== null ) {
+                    for( var i = 0; i < overlayMesh.verticesRims.children.length; ++i )
+                    {
+                        overlayMesh.verticesRims.children[i].lookAt( camera.position );
+                    }
+                }
+                
+                // Always set the plane's orientation to look at the camera.
+                // picking_data.plane.lookAt( camera.position );
+                // UPDATE: That is not necessarily the look vector.
+                picking_data.plane.quaternion.setFromUnitVectors( new THREE.Vector3( 0, 0, -1 ), getLookVector() );
+                
+                renderer.render( scene, camera );
+                // stats.update();
+            }
+            
+            async function initWebSocket() {
+                // Example code sending images: https://gist.github.com/hagino3000/1447986
+                // Let's use WebSocketClient library, which supports await: https://github.com/jcao219/websocket-async
+                // TODO: Write a websockets server. Use: http://websockets.readthedocs.io/en/stable/intro.html
+                socket = new WebSocketClient;
+                
+                // Socket from URL in modern JavaScript: https://stackoverflow.com/questions/979975/how-to-get-the-value-from-the-get-parameters
+                var url = new URL( window.location.href );
+                var port = 9988;
+                if( url.searchParams.has("port") ) {
+                    port = parseInt( url.searchParams.get("port") );
+                }
+                
+                await socket.connect('ws://localhost:' + port);
+                console.log( "Connected on port " + port + ": ", socket.connected );
+                
+                // Send the image over if it's not null.
+                // From: https://stackoverflow.com/questions/1977871/check-if-an-image-is-loaded-no-errors-in-javascript
+                // UPDATE: We'll let img.onload handle this.
+                /*
+                if( img !== null && img.complete && img.naturalWidth !== 0) {
+                    console.log("socket.connect() sending image.");
+                    sendImageToServer( img );
+                }
+                */
+            }
+            function sendImageToServer( img ) {
+                if( !socket.connected ) {
+                    console.error( "sendImageToServer() called but socket is not connected." );
+                    return;
+                }
+                
+                console.log( "websocket: load-image" );
+                socket.send( "load-image" );
+                
+                // https://stackoverflow.com/questions/10754661/javascript-getting-imagedata-without-canvas
+                var canvas = canvasFromImage( img );
+                var ctx = canvas.getContext("2d");
+                var data = ctx.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
+                socket.send( img.naturalWidth + " " + img.naturalHeight );
+                // var byteArray = Uint8Array.from(data.data);
+                // var byteArray = new Uint8Array( data.data.buffer, 0, 965600 )
+                var byteArray = data.data;
+                socket.send( byteArray );
+            }
+            /*
+            Given:
+                palette: an array of RGB triplets [ [ R, G, B ], [ R, G, B ], ... ]. Each triplet is three numbers in [0,255].
+            */
+            var updateLayersInProgress = false;
+            async function updateLayers( palette ) {
+                if( !socket.connected ) {
+                    console.error( "updateLayers() called but socket is not connected." );
+                    return;
+                }
+                updateLayersInProgress = true;
+                console.log( "websocket: palette" );
+                socket.send( "palette" );
+                console.log("debug");
+                console.log(palette)
+                socket.send( JSON.stringify( palette ) );
+                console.log( "updateLayers() sent to server. Waiting for data." )
+                
+                // var convex_hull_edges = await socket.receive();
+                // convex_hull_edges=JSON.parse(convex_hull_edges);
+                // console.log(convex_hull_edges);
+                // // TODO: Update convex hull edges.
+                
+                var num_layers = palette.length;
+                
+                temp = await socket.receive();
+                console.log( "updateLayers() received data. Inflating..." )
+                // console.log(temp);
+                // layers=JSON.parse(temp);
+                layers = inflate_Float32Array_3D( temp, img.naturalHeight,img.naturalWidth, num_layers );
+                console.log( "... finished." )
+
+                // layers=new Float32Array(img.naturalHeight,img.naturalWidth, num_layers);
+
+                // for (let i=0; i<img.naturalHeight; ++i){
+                //     for (let j=0; j<img.naturalWidth; ++j){
+                //         for (let k=0; k<num_layers; ++k){
+                //             layers[i][j][k]=temp[(i*img.naturalWidth+j)*num_layers+k];
+
+                //         }
+                //     }
+                // }
+                    // TODO: Is data a Float32Array? We need to unpack it into an image
+                    //       to display it. We can keep the Float32Array data around
+                    //       for computation.
+                
+
+                // TODO: Change to the format supported by loadWeights.
+                // console.log(layers);
+                // console.log(layers.length);
+                // console.log(layers[0]);
+                // console.log(layers[0].length);
+                // console.log(layers[0][0].length);
+
+                // TODO: Update loadWeights() to put tinted images in #layer_holder.
+                loadWeights( layers );
+                updateLayersInProgress = false;
+            }
+            
+            async function automaticallyComputePalette() {
+                console.log( "websocket: automatically-compute-palette" );
+                socket.send( "automatically-compute-palette" );
+                document.getElementById('debug').innerHTML = 'Waiting for automatic palette...';
+                var temp = await socket.receive();
+                var hull=JSON.parse(temp);
+                document.getElementById('debug').innerHTML = '';
+                loadOverlayMesh(hull, "automatic computed palette");
+                
+                // Disable precompute button.
+                document.getElementById( 'precompute' ).disabled = true;
+                // Enable the add one color button.
+                document.getElementById( 'addOneColor' ).disabled = false;
+            }
+
+            async function computePaletteByUserSpecifyNumber(M){
+                console.log( "websocket: user-choose-number-compute-palette");
+                socket.send( "user-choose-number-compute-palette" );
+                socket.send( String(M) );
+                document.getElementById('debug').innerHTML = 'Waiting for user choose number computed palette...';
+                var temp = await socket.receive();
+                var hull=JSON.parse(temp);
+                document.getElementById('debug').innerHTML = '';
+                loadOverlayMesh(hull, "user choose number computed palette");
+                
+                // Disable precompute button.
+                document.getElementById( 'precompute' ).disabled = true;
+                // Enable the add one color button.
+                document.getElementById( 'addOneColor' ).disabled = false;
+            }
+            async function userRandomAddOneMoreColor(palette){
+                console.log( "websocket: random-add-one-more-color");
+                socket.send( "random-add-one-more-color" );
+                socket.send( JSON.stringify( palette ) );
+                var temp = await socket.receive();
+                var hull=JSON.parse(temp);
+                document.getElementById('debug').innerHTML = '';
+                loadOverlayMesh(hull, "user choose number computed palette");
+            }
+
+
+        </script>
+
+    </body>
+</html>

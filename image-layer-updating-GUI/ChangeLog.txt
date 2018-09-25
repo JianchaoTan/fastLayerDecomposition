@@ -1,0 +1,48 @@
+## 2018-01-15
+
+You can now drag additional overlay vertices. For example, dragging the following will add a few smaller, black-rimmed vertices:
+
+    {
+	"clear": false, "vertex_radius": 0.007843, "vertex_rim_radius": 0.013, "vertex_rim_color": "black",
+	"vs": [[95, 155, 156], [96, 154, 156], [95, 153, 155], [93, 138, 139], [77, 102, 104]]
+    }
+
+`"clear": true` means to also show these vertices rather than clearing the old ones.
+The other properties control the size of the color, the size of its rim, and the color of its rim.
+
+## 2015-12-05
+
+You can save the modified overlay mesh.
+
+You can save the camera orientation. You can load a camera orientation by dragging-and-dropping the saved file.
+
+Screenshots are saved to the downloads folder along with the camera orientation.
+
+
+## 2015-12-03
+
+Now, you can drop a JSON file on it with weights, and you can drag the vertices around.
+
+The format is a JSON file containing a dictionary with a key named 'weights' whose value is an array of arrays of arrays, where the outermost array is the rows of the image, then the columns of the image, and finally the weights for that pixel.
+
+Here is an example:
+
+{ 'weights': [
+	[ [ pixel00_weight0, pixel00_weight1, pixel00_weight2, ... ], [ pixel01_weight0, pixel01_weight1, ... ], ... ],
+	[ [ pixel10_weight0, pixel10_weight1, ... ], ... ], ... ],
+	...
+	]
+}
+
+If you were in Python, you could do this:
+
+	import numpy as np
+	import json
+	weights = np.zeros( ( N, M, num_weights ) )
+	## Fill `weights` with weights.
+	with open( 'weights.json', 'wb' ) as f: json.dump( { 'weights': weights.tolist() }, f )
+
+Check it out:
+	https://yig.github.io/image-rgb-in-3D
+
+Also, screenshots is turned on by default.

@@ -1,0 +1,44 @@
+# Startup
+Browser:
+    // Actually, use the WebSocketClient library because it supports await: https://github.com/jcao219/websocket-async
+    https://github.com/yig/websocket-async/
+    let socket = new WebSocket( "ws://localhost:4567" );
+
+# User loads an image. This happens in the browser.
+Browser:
+    socket.send( "load-image" );
+    socket.send( image_data );
+Server:
+    // Create a server with the python websockets library: http://websockets.readthedocs.io/en/stable/intro.html
+    if socket receives "load-image":
+        compute RGBXY deconstruction
+
+# User changes a palette.
+User can load a palette by dragging and dropping onto the browser like before.
+User can edit a palette by interacting with the GUI to add a new color, delete a color, or modify a color.
+
+Browser:
+    socket.send( "palette" )
+    socket.send( "[ [ R, G, B ], [ R, G, B ], ... ]" )
+Server:
+    if socket receives "palette":
+        compute layer decomposition
+        socket.send( convex_hull_edges )
+        socket.send( len( layers ) )
+        for layer in layers:
+            socket.send( "layer #", layer )
+Browser:
+    convex_hull_edges = socket.receive()
+    num_layers = socket.receive()
+    for i in num_layers:
+        layers[i] = socket.receive()
+        create an image from the data
+    draw reconstruction
+
+# User requests an automatic palette.
+Browser:
+    socket.send( "automatically-compute-palette" );
+Server:
+    if socket receives "automatically-compute-palette":
+        compute automatic palette
+        socket.send( palette )
