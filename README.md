@@ -23,6 +23,7 @@ Launch GUI:
 The `turquoise.png` image is copyright [Michelle Lee](http://cargocollective.com/michellelee/Illustration).
 
 ## Dependencies
+* Python3.6
 * NumPy
 * SciPy
 * Cython
