@@ -17,10 +17,14 @@ Launch GUI:
 
     cd image-layer-updating-GUI
     python3 server.py
+
+    In a new terminal:
+    cd image-layer-updating-GUI
     http-server
 
+Some videos of GUI usage can be found in [this link](https://cragl.cs.gmu.edu/fastlayers/)
 
-The `turquoise.png` image is copyright [Michelle Lee](http://cargocollective.com/michellelee/Illustration).
+The `turquoise.png` image is copyright [Michelle Lee](https://cargocollective.com/michellelee).
 
 ## Dependencies
 * Python3.6
