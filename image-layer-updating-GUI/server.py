@@ -53,7 +53,7 @@ async def layer_server( websocket, path ):
             data_hull=ConvexHull(RGBXY_data.reshape((-1,5)))
             print( "\t...finished" )
             print( "\tComputing W_RGBXY..." )
-            RGBXY_mixing_weights=RGBXY_method.recover_ASAP_weights_using_scipy_delaunay(data_hull.points[data_hull.vertices], data_hull.points, option=3)
+            RGBXY_mixing_weights=Additive_mixing_layers_extraction.recover_ASAP_weights_using_scipy_delaunay(data_hull.points[data_hull.vertices], data_hull.points, option=3)
             print( "\t...finished" )
             print( "... finished." )
 
