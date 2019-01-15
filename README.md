@@ -26,6 +26,14 @@ Some videos of GUI usage can be found in [this link](https://cragl.cs.gmu.edu/fa
 
 The `turquoise.png` image is copyright [Michelle Lee](https://cargocollective.com/michellelee).
 
+
+## Image Recoloring GUI:
+
+Users can perform global recoloring in our web GUI: https://yig.github.io/image-rgb-in-3D/
+First load the original image, then drag-and-drop saved palette .js file, and finally drag-and-drop saved mixing weights .js file. Then user can click and move the palette vertices in GUI to do image recoloring.
+This image recoloring web GUI is also used in our previous project: https://github.com/JianchaoTan/Decompose-Single-Image-Into-Layers
+
+
 ## Dependencies
 * Python3.6
 * NumPy
